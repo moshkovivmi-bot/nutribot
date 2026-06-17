@@ -97,7 +97,11 @@ def format_profile(profile):
     return "\n".join(lines)
 
 
-def ask_groq(messages, max_tokens=2000):
+# ============================================================
+# GROQ — АСИНХРОННЫЕ ВЫЗОВЫ
+# ============================================================
+
+def _ask_groq_sync(messages, max_tokens=2000):
     response = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
         headers={
@@ -107,14 +111,19 @@ def ask_groq(messages, max_tokens=2000):
         json={
             "model": "llama-3.3-70b-versatile",
             "messages": messages,
-            "temperature": 0.8,
+            "temperature": 0.7,
             "max_tokens": max_tokens
-        }
+        },
+        timeout=30
     )
     return response.json()["choices"][0]["message"]["content"].strip()
 
 
-def ask_groq_vision(photo_base64):
+async def ask_groq(messages, max_tokens=2000):
+    return await asyncio.to_thread(_ask_groq_sync, messages, max_tokens)
+
+
+def _ask_groq_vision_sync(photo_base64):
     response = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
         headers={
@@ -134,9 +143,14 @@ def ask_groq_vision(photo_base64):
                 ]
             }],
             "max_tokens": 500
-        }
+        },
+        timeout=30
     )
     return response.json()["choices"][0]["message"]["content"].strip()
+
+
+async def ask_groq_vision(photo_base64):
+    return await asyncio.to_thread(_ask_groq_vision_sync, photo_base64)
 
 
 # ============================================================
@@ -222,38 +236,29 @@ async def generate_variants(profile, cook_data, shown_dishes=None):
     persons = profile.get('persons', '1')
     exclude = ""
     if shown_dishes:
-        exclude = f"\nНЕ предлагай эти блюда (уже показаны): {', '.join(shown_dishes)}"
+        exclude = f"\nНЕ предлагай эти блюда: {', '.join(shown_dishes)}"
 
     shelf_note = ""
     if "неделю" in days:
-        shelf_note = "Блюда должны храниться 5-7 дней или замораживаться. Не предлагай салаты со свежими овощами."
+        shelf_note = "Блюда должны храниться 5-7 дней или замораживаться."
     elif "2-3" in days:
         shelf_note = "Блюда должны храниться 2-3 дня в холодильнике."
 
-    prompt = f"""Ты опытный шеф-повар. Предложи РОВНО 3 разных варианта блюд.
-
-Данные:
-- Приём пищи: {cook_data.get('meal_type', 'любой')}
-- Готовим на: {days}, на {persons} человек
-- Любит: {profile.get('likes', 'всё')}
-- Не ест: {profile.get('dislikes', 'ничего')}
-- Бюджет: {profile.get('budget', 'средний')}
-- Время: {profile.get('time', 'до часа')}
-- Пожелания: {cook_data.get('mood', 'нет')}
+    prompt = f"""Ты шеф-повар. Предложи РОВНО 3 разных варианта блюд.
+Приём пищи: {cook_data.get('meal_type', 'любой')}, на {days}, на {persons} человек.
+Любит: {profile.get('likes', 'всё')}. Не ест: {profile.get('dislikes', 'ничего')}.
+Бюджет: {profile.get('budget', 'средний')}. Время: {profile.get('time', 'до часа')}.
+Пожелания: {cook_data.get('mood', 'нет')}.
 {shelf_note}{exclude}
 
-ПРАВИЛА:
-- Каждое блюдо самодостаточное (один белок + один гарнир или всё в одном)
-- Никаких двух круп или двух гарниров в одном блюде
-- Варианты разные по типу приготовления
-- Реалистичные домашние блюда
+ПРАВИЛА: каждое блюдо самодостаточное (один белок + один гарнир), никаких двух круп, варианты разные по типу.
 
 Ответь СТРОГО в формате (только 3 строки):
-1. [Название] — [одно предложение описание] — [время] — [стоимость]
-2. [Название] — [одно предложение описание] — [время] — [стоимость]
-3. [Название] — [одно предложение описание] — [время] — [стоимость]"""
+1. [Название] — [описание] — [время] — [стоимость]
+2. [Название] — [описание] — [время] — [стоимость]
+3. [Название] — [описание] — [время] — [стоимость]"""
 
-    return ask_groq([{"role": "user", "content": prompt}], max_tokens=500)
+    return await ask_groq([{"role": "user", "content": prompt}], max_tokens=500)
 
 
 async def generate_full_recipe(dish_name, profile, cook_data):
@@ -261,22 +266,20 @@ async def generate_full_recipe(dish_name, profile, cook_data):
     persons = profile.get('persons', '1')
     shelf = f"Укажи как хранить и разогревать (готовим на {days})." if "день" not in days else ""
 
-    prompt = f"""Ты шеф-повар. Напиши подробный рецепт: "{dish_name}", на {persons} человек.
-{shelf}
+    prompt = f"""Шеф-повар. Рецепт: "{dish_name}", на {persons} человек. {shelf}
 
-Формат:
 🍽 *{dish_name}*
 👥 Порций: X | ⏰ Время: X | 💰 Стоимость: X руб
 
 📝 *Ингредиенты:*
-[список с граммовками]
+[список]
 
 👨‍🍳 *Приготовление:*
 [пошаговый рецепт]
 
-💡 *Совет шефа:* [один полезный совет]"""
+💡 *Совет:* [совет]"""
 
-    return ask_groq([{"role": "user", "content": prompt}], max_tokens=2000)
+    return await ask_groq([{"role": "user", "content": prompt}], max_tokens=2000)
 
 
 async def calculate_norm(data):
@@ -284,57 +287,35 @@ async def calculate_norm(data):
 Пол: {data.get('gender')}, возраст: {data.get('age')}, вес: {data.get('weight')} кг, рост: {data.get('height')} см.
 Активность: {data.get('activity')}, цель: {data.get('goal')}.
 Ответь СТРОГО в формате JSON:
-{{"calories": число, "protein": число, "fat": число, "carbs": число, "explanation": "краткое объяснение"}}"""
-    text = ask_groq([{"role": "user", "content": prompt}], max_tokens=400)
+{{"calories": число, "protein": число, "fat": число, "carbs": число, "explanation": "объяснение"}}"""
+    text = await ask_groq([{"role": "user", "content": prompt}], max_tokens=400)
     text = text.replace("```json", "").replace("```", "").strip()
     return json.loads(text)
 
 
 async def generate_strip(data, profile):
-    prompt = f"""Ты диетолог. Составь стрип питания под цель.
-Цель: {data.get('goal')}
-Текущее питание: {data.get('current', 'не указано')}
-Любит: {profile.get('likes', 'всё')}, не ест: {profile.get('dislikes', 'ничего')}
-Бюджет: {profile.get('budget', 'средний')}
-
-Дай:
-1. Принципы питания под цель (3-5 пунктов)
-2. Что есть и что избегать
-3. Распределение КБЖУ
-4. 3 практических совета"""
-    return ask_groq([{"role": "user", "content": prompt}], max_tokens=1500)
+    prompt = f"""Диетолог. Стрип питания под цель.
+Цель: {data.get('goal')}. Питание сейчас: {data.get('current', 'не указано')}.
+Любит: {profile.get('likes', 'всё')}, не ест: {profile.get('dislikes', 'ничего')}.
+Бюджет: {profile.get('budget', 'средний')}.
+Дай: принципы питания (3-5 пунктов), что есть/избегать, распределение КБЖУ, 3 совета."""
+    return await ask_groq([{"role": "user", "content": prompt}], max_tokens=1500)
 
 
 async def calculate_portion(food, weight):
-    prompt = f"""Рассчитай КБЖУ для "{food}" весом {weight}г.
-Ответь СТРОГО в формате JSON:
-{{"calories": число, "protein": число, "fat": число, "carbs": число, "comment": "комментарий"}}
-Числа целые."""
-    text = ask_groq([{"role": "user", "content": prompt}], max_tokens=300)
+    prompt = f"""КБЖУ для "{food}" весом {weight}г.
+JSON: {{"calories": число, "protein": число, "fat": число, "carbs": число, "comment": "комментарий"}}"""
+    text = await ask_groq([{"role": "user", "content": prompt}], max_tokens=300)
     text = text.replace("```json", "").replace("```", "").strip()
     return json.loads(text)
 
 
 async def generate_shopping(recipe, persons):
-    prompt = f"""Составь список продуктов для "{recipe}" на {persons} человек.
-Формат:
-🛒 *Список покупок: {recipe}*
-👥 На {persons} человек
-
-[категория]:
-- продукт — количество — цена
-
+    prompt = f"""Список продуктов для "{recipe}" на {persons} человек.
+🛒 *Список: {recipe}* | 👥 {persons} чел
+[категория]: - продукт — кол-во — цена
 Итого: ~X руб"""
-    return ask_groq([{"role": "user", "content": prompt}], max_tokens=800)
-
-
-# ============================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ============================================================
-
-async def send_cook_question(update, step, profile_data=None):
-    _, q, opts = COOK_QUESTIONS[step]
-    await update.message.reply_text(q, reply_markup=make_keyboard(opts) if opts else ReplyKeyboardMarkup([[KeyboardButton("Пропустить")], [KeyboardButton("◀️ Назад")]], resize_keyboard=True))
+    return await ask_groq([{"role": "user", "content": prompt}], max_tokens=800)
 
 
 async def show_variants(update, user_id, state):
@@ -358,7 +339,7 @@ async def show_variants(update, user_id, state):
 
     keyboard = make_choice_keyboard(dishes, extra=["🔄 Другие варианты"])
     await update.message.reply_text(
-        "🍽 *Вот 3 варианта:*\n\n" + variants + "\n\nВыбери блюдо или попроси другие:",
+        "🍽 *Вот 3 варианта:*\n\n" + variants + "\n\nВыбери блюдо:",
         parse_mode="Markdown", reply_markup=keyboard
     )
 
@@ -371,7 +352,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id in user_states:
         del user_states[update.effective_user.id]
     await update.message.reply_text(
-        "👋 Привет! Я твой кулинарный помощник и нутрициолог.\n\nВыбери что хочешь сделать 👇",
+        "👋 Привет! Я твой кулинарный помощник.\n\nВыбери что хочешь сделать 👇",
         reply_markup=get_main_keyboard()
     )
 
@@ -395,7 +376,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await context.bot.get_file(photo.file_id)
         photo_bytes = await file.download_as_bytearray()
         photo_base64 = base64.b64encode(photo_bytes).decode("utf-8")
-        text = ask_groq_vision(photo_base64)
+        text = await ask_groq_vision(photo_base64)
         text = text.replace("```json", "").replace("```", "").strip()
         result = json.loads(text)
         food_name = result.get("food", "Продукт")
@@ -423,38 +404,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user_states.get(user_id, {})
     mode = state.get("mode")
 
-    # НАЗАД
     if text == "◀️ Назад":
         if user_id in user_states:
             del user_states[user_id]
         await update.message.reply_text("Главное меню:", reply_markup=get_main_keyboard())
         return
 
-    # ГЛАВНЫЕ КНОПКИ
     if text == "🍳 Что приготовить?":
         profile = user_profiles.get(user_id, {})
         if profile.get("likes"):
-            # Предпочтения есть — спросить оставить или изменить
             user_states[user_id] = {"mode": "cook_confirm", "data": {}, "shown_dishes": []}
             summary = f"🍽 {profile.get('likes','—')}\n🚫 {profile.get('dislikes','—')}\n💰 {profile.get('budget','—')}\n⏰ {profile.get('time','—')}\n👥 {profile.get('persons','—')}"
             await update.message.reply_text(
-                f"⚙️ *Твои текущие предпочтения:*\n\n{summary}\n\nИспользовать их или изменить?",
+                f"⚙️ *Твои предпочтения:*\n\n{summary}\n\nИспользовать или изменить?",
                 parse_mode="Markdown",
                 reply_markup=make_keyboard(["✅ Оставить прежние", "✏️ Изменить"], skip=False)
             )
         else:
-            # Предпочтений нет — собираем
             user_states[user_id] = {"mode": "cook_profile", "step": 0, "data": {}, "shown_dishes": []}
             _, q, opts = PROFILE_QUESTIONS[0]
-            await update.message.reply_text(
-                "👋 Прежде чем подобрать рецепт, расскажи о себе!\n\n" + q,
-                reply_markup=make_keyboard(opts)
-            )
+            await update.message.reply_text("👋 Расскажи о себе!\n\n" + q, reply_markup=make_keyboard(opts))
         return
 
     if text == "📸 КБЖУ блюда":
         user_states[user_id] = {"mode": "kbzhu_photo"}
-        await update.message.reply_text("📸 Отправь фото еды или напиши название блюда:", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("◀️ Назад")]], resize_keyboard=True))
+        await update.message.reply_text("📸 Отправь фото или напиши название блюда:", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("◀️ Назад")]], resize_keyboard=True))
         return
 
     if text == "👪 КБЖУ на порцию":
@@ -470,7 +444,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "⚖️ Моя норма КБЖУ":
         user_states[user_id] = {"mode": "norm", "step": 0, "data": {}}
         _, q, opts = NORM_QUESTIONS[0]
-        await update.message.reply_text("⚖️ *Рассчитаем норму КБЖУ*\n\n" + q, parse_mode="Markdown", reply_markup=make_keyboard(opts, skip=False))
+        await update.message.reply_text("⚖️ *Норма КБЖУ*\n\n" + q, parse_mode="Markdown", reply_markup=make_keyboard(opts, skip=False))
         return
 
     if text == "🔥 Стрип питания":
@@ -509,7 +483,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🗑 Дневник очищен!", reply_markup=get_main_keyboard())
         return
 
-    # ПОДТВЕРЖДЕНИЕ ПРЕДПОЧТЕНИЙ ДЛЯ ГОТОВКИ
     if mode == "cook_confirm":
         if text == "✅ Оставить прежние":
             user_states[user_id] = {"mode": "cook", "step": 0, "data": {}, "shown_dishes": state.get("shown_dishes", [])}
@@ -521,7 +494,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(q, reply_markup=make_keyboard(opts))
         return
 
-    # СБОР ПРОФИЛЯ ПЕРЕД ГОТОВКОЙ
     if mode == "cook_profile":
         step = state["step"]
         key, _, _ = PROFILE_QUESTIONS[step]
@@ -538,10 +510,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_profiles[user_id].update(state["data"])
             user_states[user_id] = {"mode": "cook", "step": 0, "data": {}, "shown_dishes": state.get("shown_dishes", [])}
             _, q, opts = COOK_QUESTIONS[0]
-            await update.message.reply_text("✅ Предпочтения сохранены!\n\n" + q, reply_markup=make_keyboard(opts))
+            await update.message.reply_text("✅ Сохранено!\n\n" + q, reply_markup=make_keyboard(opts))
         return
 
-    # ВОПРОСЫ ЧТО ПРИГОТОВИТЬ
     if mode == "cook":
         step = state["step"]
         key, _, _ = COOK_QUESTIONS[step]
@@ -558,10 +529,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(e)
                 del user_states[user_id]
-                await update.message.reply_text("😕 Ошибка.", reply_markup=get_main_keyboard())
+                await update.message.reply_text("😕 Ошибка. Попробуй ещё раз.", reply_markup=get_main_keyboard())
         return
 
-    # ВЫБОР БЛЮДА
     if mode == "choose":
         if text == "🔄 Другие варианты":
             try:
@@ -583,15 +553,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("😕 Ошибка.", reply_markup=get_main_keyboard())
         return
 
-    # КБЖУ ПО ТЕКСТУ
     if mode == "kbzhu_photo":
         await update.message.reply_text("⏳ Считаю КБЖУ...")
         try:
-            prompt = f"""Ты нутрициолог. Блюдо: "{text}". Определи КБЖУ на стандартную порцию.
-Ответь СТРОГО в формате JSON:
-{{"calories": число, "protein": число, "fat": число, "carbs": число, "comment": "комментарий"}}
-Числа целые."""
-            r = ask_groq([{"role": "user", "content": prompt}], max_tokens=300)
+            prompt = f"""КБЖУ для "{text}" на стандартную порцию.
+JSON: {{"calories": число, "protein": число, "fat": число, "carbs": число, "comment": "комментарий"}}"""
+            r = await ask_groq([{"role": "user", "content": prompt}], max_tokens=300)
             r = r.replace("```json", "").replace("```", "").strip()
             result = json.loads(r)
             entry = {"food": text, "calories": result["calories"], "protein": result["protein"], "fat": result["fat"], "carbs": result["carbs"]}
@@ -607,7 +574,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("😕 Напиши точнее.")
         return
 
-    # КБЖУ НА ПОРЦИЮ
     if mode == "portion":
         step = state["step"]
         key, _, _ = PORTION_QUESTIONS[step]
@@ -637,7 +603,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("😕 Ошибка.", reply_markup=get_main_keyboard())
         return
 
-    # СПИСОК ПОКУПОК
     if mode == "shopping":
         step = state["step"]
         key, _, opts = SHOPPING_QUESTIONS[step]
@@ -650,7 +615,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("⏳ Составляю список...")
             try:
-                result = await generate_shopping(state["data"].get("recipe",""), state["data"].get("persons","1"))
+                result = await generate_shopping(state["data"].get("recipe", ""), state["data"].get("persons", "1"))
                 del user_states[user_id]
                 await update.message.reply_text(result, parse_mode="Markdown", reply_markup=get_main_keyboard())
             except Exception as e:
@@ -659,7 +624,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("😕 Ошибка.", reply_markup=get_main_keyboard())
         return
 
-    # НОРМА КБЖУ
     if mode == "norm":
         step = state["step"]
         key, _, _ = NORM_QUESTIONS[step]
@@ -678,7 +642,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_profiles[user_id]["norm"] = result
                 del user_states[user_id]
                 await update.message.reply_text(
-                    f"⚖️ *Твоя суточная норма КБЖУ:*\n\n🔥 Калории: *{result['calories']} ккал*\n🥩 Белки: *{result['protein']}г*\n🧈 Жиры: *{result['fat']}г*\n🍞 Углеводы: *{result['carbs']}г*\n\n💬 {result.get('explanation','')}",
+                    f"⚖️ *Твоя норма КБЖУ:*\n\n🔥 {result['calories']} ккал\n🥩 Белки: {result['protein']}г\n🧈 Жиры: {result['fat']}г\n🍞 Углеводы: {result['carbs']}г\n\n💬 {result.get('explanation','')}",
                     parse_mode="Markdown", reply_markup=get_main_keyboard()
                 )
             except Exception as e:
@@ -687,7 +651,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("😕 Ошибка.", reply_markup=get_main_keyboard())
         return
 
-    # СТРИП ПИТАНИЯ
     if mode == "strip":
         step = state["step"]
         key, _, _ = STRIP_QUESTIONS[step]
@@ -711,7 +674,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("😕 Ошибка.", reply_markup=get_main_keyboard())
         return
 
-    # ПРОФИЛЬ
     if mode == "profile_confirm":
         if text == "✏️ Изменить предпочтения":
             user_states[user_id] = {"mode": "profile", "step": 0, "data": {}}
@@ -737,14 +699,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Предпочтения сохранены!", reply_markup=get_main_keyboard())
         return
 
-    # ОБЫЧНЫЙ ТЕКСТ — КБЖУ
+    # КБЖУ по тексту
     await update.message.reply_text("⏳ Считаю КБЖУ...")
     try:
-        prompt = f"""Ты нутрициолог. Блюдо: "{text}". КБЖУ на стандартную порцию.
-Ответь СТРОГО в формате JSON:
-{{"calories": число, "protein": число, "fat": число, "carbs": число, "comment": "комментарий"}}
+        prompt = f"""КБЖУ для "{text}" на стандартную порцию.
+JSON: {{"calories": число, "protein": число, "fat": число, "carbs": число, "comment": "комментарий"}}
 Числа целые."""
-        r = ask_groq([{"role": "user", "content": prompt}], max_tokens=300)
+        r = await ask_groq([{"role": "user", "content": prompt}], max_tokens=300)
         r = r.replace("```json", "").replace("```", "").strip()
         result = json.loads(r)
         entry = {"food": text, "calories": result["calories"], "protein": result["protein"], "fat": result["fat"], "carbs": result["carbs"]}
