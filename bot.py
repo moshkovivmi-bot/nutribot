@@ -14,8 +14,9 @@ from telegram.ext import (
 # ============================================================
 # ВСТАВЬ СВОИ КЛЮЧИ ЗДЕСЬ
 # ============================================================
-TELEGRAM_TOKEN = "8990506089:AAFnbITzx3DmtkvlQH3_OK8q0Iy92_U5YzA"
-GROQ_API_KEY = "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"
+import os
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 # ============================================================
 
 logging.basicConfig(level=logging.INFO)
