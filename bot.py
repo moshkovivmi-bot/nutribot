@@ -169,12 +169,13 @@ def get_main_keyboard():
 
 
 def make_keyboard(options, skip=True):
+    if not options:
+        options = []
     keyboard = [[KeyboardButton(opt)] for opt in options]
     if skip:
         keyboard.append([KeyboardButton("Пропустить")])
     keyboard.append([KeyboardButton("◀️ Назад")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
 
 def make_choice_keyboard(options, extra=None):
     keyboard = [[KeyboardButton(opt)] for opt in options]
